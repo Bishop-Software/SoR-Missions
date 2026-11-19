@@ -17,14 +17,25 @@ Core.BURN.trigger[CO.TASK] = {}   -- keyed to the first HP-add emote only (BURN.
 -- first HP-based add wave; repeats per wave, burn_st.active holds off the repeats
 Core.BURN.emote[CO.TASK]   = '#*#Skittering and odd crooning sounds can be heard even before the creatures making them teleport into the area#*#'
 
--- col_stomp: "The Colossus scuffs the ground with one foot" -- an AE feign; stand back up
+-- col_stomp: "The Colossus scuffs the ground with one foot" -- an AE feign in 10s; stand
+-- back up after it. Not a wait in the event: the stand is due at feign_stand_at, and the
+-- pulse sends it then, only if we are actually feigned.
+local FEIGN_STAND_AFTER = 10750   -- ms after the emote
+local feign_stand_at = nil
 local function col_ae_feign()
-    local start_time = mq.gettime()
     announce('AEFD in 10s, autostand set')
-    while mq.gettime() - start_time < 10000 do mq.delay(500) end
-    mq.delay(750)
-    debug_local('AEFD, standing')
-    mq.cmd("/stand")
+    feign_stand_at = mq.gettime() + FEIGN_STAND_AFTER
+end
+local function check_feign_stand()
+    if not feign_stand_at or mq.gettime() < feign_stand_at then return end
+    -- give the feign a few seconds to land if it is late; then drop it
+    if mq.TLO.Me.Feigning() then
+        feign_stand_at = nil
+        debug_local('AEFD, standing')
+        mq.cmd("/stand")
+    elseif mq.gettime() > feign_stand_at + 5000 then
+        feign_stand_at = nil
+    end
 end
 
 -- Colossus workers. Each worker is killed standing in its own aura: the runic worker in
@@ -287,11 +298,15 @@ function CO.events()
     mq.event('col_stomp', '#*#The Colossus scuffs the ground with one foot#*#', col_ae_feign)
 end
 
-CO.pulse = check_auras
+function CO.pulse()
+    check_feign_stand()
+    check_auras()
+end
 
 -- New instance: no workers worked yet
 function CO.reset()
     aura_st.stripped, aura_st.did_workers, aura_st.went_colossus = {}, false, false
+    feign_stand_at = nil
 end
 
 -- Hail Torm: "now" makes the workers killable and they aggro. The tank's check_auras

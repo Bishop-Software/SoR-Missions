@@ -1,8 +1,8 @@
 print('====== SoR Missions =======')
-print('version 0.980' )
+print('version 0.981' )
 print('by nerp')
 print('=======================')
-print('/sorm for help')
+print('/sormissions (or just /sorm) for help')
 
 -- SoR Missions, the common core: state, group comms, mode/nav control, MA targeting, burn
 -- mode, the zone-in / start, commands, the window, and the main loop. Everything that
@@ -13,11 +13,13 @@ print('/sorm for help')
 --   events()      register the mission's mq.events (Init)
 --   enter()       the task has just come up
 --   ma_changed(is_ma)  we just became / stopped being the group MA
---   pre_pulse()   every pulse, before targeting
+--   pre_pulse()   every pulse, before targeting                  (in the mission zone only)
 --   hold()        true: the MA stands down this pulse (no pick_target)
 --   pick()        true: the mission chose the MA's target itself this pulse
 --   skip(spawn)   true: leave this hater out of the kill-order pick
---   pulse()       every pulse, after events
+--   pulse()       every pulse, after events                      (in the mission zone only)
+--   idle_pulse()  every pulse while the task is held, in any zone: checks/warnings only,
+--                 no actions (pre-start checks outside)
 --   reset()       zoned: a new instance
 --   can_start()   false refuses the start (it says why)
 --   start()       inside the mission: start the event
@@ -54,7 +56,10 @@ local def  = {
     name  = mq.TLO.Me.CleanName(),
     DEBUG = false,
     pulse = 600,
-    cmd   = "/sorm",
+    -- Named after the script (RedGuides: one command, named after it). MQ takes any
+    -- unique prefix of a command, so /sorm works too. The script itself always sends the
+    -- full name to the group: a prefix could also match another script's command.
+    cmd   = "/sormissions",
     TARGET_RANGE = 200,   -- safe_target: farther than this only if on xtarget
     ENGAGE_MAX = 400,       -- xt_sane: a hater farther than this (3D) is not engaged
     ENGAGE_NEAR = 100,      -- xt_sane: past this, the nav path is checked too
@@ -76,6 +81,8 @@ local flags = {
     USE_SKEL = true,     -- Echo of Hate illusion: true = skeleton, false = Jann
     ILLUSION_OTHER = true,  -- Echo of Hate: players handle the illusion themselves; sorm neither checks nor clicks it (default)
     USE_EQBC = false,       -- group broadcasts over EQBC instead of DanNet (UI radio / set_use_eqbc)
+    AUTO_LAUNCH = true,     -- start / Echo item check: /lua run sorm on our own boxes that do
+                            -- not answer (only ever after Start is clicked); off = name them only
     ANNO = true, --basic info
 }
 
@@ -121,8 +128,10 @@ local function eqbc_has_group()
     for n in names:gmatch('%S+') do on[n:lower()] = true end
     if not on[def.name:lower()] then return false end
     for i = 1, (mq.TLO.Group.Members() or 0) do
-        local n = mq.TLO.Group.Member(i).Name()
-        if not n or not on[n:lower()] then return false end
+        local m = mq.TLO.Group.Member(i)
+        local n = m.Name()
+        -- a merc is never on EQBC: it would force every merc group onto DanNet
+        if not m.Mercenary() and (not n or not on[n:lower()]) then return false end
     end
     return true
 end
@@ -267,6 +276,12 @@ local function in_instance_zone()
     return zsn:find('_mission$') ~= nil or zsn:find('_raid$') ~= nil
 end
 
+-- A *_mission zone: the only place Main acts (targeting, burns, mission pulses). Holding
+-- the task in the live zone is not enough.
+function Core.in_mission_zone()
+    return (mq.TLO.Zone.ShortName() or ''):find('_mission$') ~= nil
+end
+
 function Core.is_healer()
     return def.class == 'CLR' or def.class == 'SHM' or def.class == 'PAL' or def.class == 'DRU'
 end
@@ -288,6 +303,7 @@ end
 -- The mission's own mobs (kill order, burn boss) skip the range checks: Shar'Drahn is
 -- 430 from Gwark at the start. Only stray haters can be warp bugs.
 local xt_warned = {}
+local xt_path, XT_PATH_CACHE = {}, 3000   -- id -> { len, t }
 local function mission_mob(s)
     local name = (s.Name() or ''):lower()
     for _, n in ipairs(kill_order[State.current_task] or {}) do
@@ -305,7 +321,15 @@ local function xt_sane(id)
     if d > def.ENGAGE_MAX then
         why = string.format('%.0f away', d)
     elseif d > def.ENGAGE_NEAR then
-        local len = mq.TLO.Navigation.PathLength('id '..id)() or -1
+        -- path length cached per ID for XT_PATH_CACHE ms: radar() asks for every hater every
+        -- pulse, and a mob 100-400 out does not change reachability that fast
+        local now, c = mq.gettime(), xt_path[id]
+        local len
+        if c and now - c.t < XT_PATH_CACHE then len = c.len
+        else
+            len = mq.TLO.Navigation.PathLength('id '..id)() or -1
+            xt_path[id] = { len = len, t = now }
+        end
         if len < 0 then why = 'no nav path'
         elseif len > def.ENGAGE_PATH_MAX then why = string.format('%.0f away by nav', len) end
     end
@@ -320,6 +344,7 @@ local function xt_sane(id)
     return false
 end
 Core.xt_sane = xt_sane
+function Core.xt_reset() xt_warned, xt_path = {}, {} end
 
 Core.read_task, Core.debug_local, Core.announce, Core.announce_g = read_task, debug_local, announce, announce_g
 Core.can_target, Core.safe_target = can_target, safe_target
@@ -555,10 +580,13 @@ end
 
 -- Target `id` as MA. Under RGMercs Lua also force it as RGMercs' auto-target, or RGMercs
 -- picks its own and fights our choice (forcetarget holds until the mob is invalid).
+-- False (nothing sent) if a player could not target it: callers must not /attack then,
+-- or the attack lands on whatever was already targeted.
 local function ma_target(id)
-    if not can_target(id) then return end
+    if not can_target(id) then return false end
     mq.cmdf("/mqtarget id %d", id)
     if rgmercs_lua() then mq.cmdf("/rgl forcetarget %d", id) end
+    return true
 end
 
 -- Stop / resume engaging entirely (RGMercs Lua only; CWTN callers use Manual instead).
@@ -676,10 +704,19 @@ local function engage(targid, priority)
         State.self_held = false
         fight_mode()
     end
-    ma_target(targid)
+    if not ma_target(targid) then
+        debug_local('Engage: cannot target %s(%s), not attacking', tostring(name), targid)
+        State.assigned_target = nil
+        return
+    end
     mq.delay(500)
     local t = mq.gettime()
     while mq.TLO.Window('CastingWindow').Open() and (mq.gettime() - t) < 3000 do mq.delay(150) end
+    -- only onto the mob we meant: the target can have been swapped meanwhile
+    if mq.TLO.Target.ID() ~= targid then
+        debug_local('Engage: target is %s, not %s -- not attacking', tostring(mq.TLO.Target.CleanName()), tostring(name))
+        return
+    end
     mq.cmd("/attack on")
 
     BOXR_RG.next = 0
@@ -841,14 +878,39 @@ START.GIVER_RADIUS = 60
 START.ZONE_WAIT    = 120   -- s for the port into the mission
 START.SETTLE       = 5     -- s after landing for the spawns to come in
 
+-- The task's own giver only, by name: no nearest-NPC fallback, or a task held from another
+-- mission would say ready to whatever giver we stand at. Nearest NPC only for a mission
+-- with no giver set.
+local function giver_near(name)
+    return mq.TLO.Spawn(string.format("npc radius %d %s", START.GIVER_RADIUS, name))
+end
 local function start_giver()
     local m = mission()
-    local name = m and m.giver
-    local giver = name and mq.TLO.Spawn(string.format("npc radius %d %s", START.GIVER_RADIUS, name))
-    if not (giver and giver()) then
-        giver = mq.TLO.NearestSpawn(string.format('npc radius %d', START.GIVER_RADIUS))
+    if m and m.giver then return giver_near(m.giver) end
+    return mq.TLO.NearestSpawn(string.format('npc radius %d', START.GIVER_RADIUS))
+end
+
+-- Outside: the task held has to be one of ours and its giver the one we stand at. Run
+-- before anything is sent to the group. Names the mission whose giver is here if the task
+-- is for another one (a stale task).
+local function start_task_check()
+    State.current_task = read_task()
+    local m = mission()
+    if not m then
+        announce_g('Start: no mission task (have: %s) -- get the task first', tostring(State.current_task))
+        return false
     end
-    return giver
+    if start_giver()() then return true end
+    for title, o in pairs(missions) do
+        if o ~= m and o.giver and giver_near(o.giver)() then
+            announce_g('Start: task is %s, but this is the %s giver -- drop the old task and get this one',
+                State.current_task, title)
+            return false
+        end
+    end
+    announce_g('Start: %s giver (%s) not within %d -- stand at it and start again',
+        State.current_task, tostring(m.giver), START.GIVER_RADIUS)
+    return false
 end
 
 -- The rest of the group gets plain commands, so they zone in whether or not sorm is
@@ -869,20 +931,35 @@ local function start_group_pause(on, only)
     end
 end
 
--- The group's tank: the Main Tank role if someone holds it, else the Main Assist if it
--- is a tank class, else the first tank class in the group (us first). nil if none.
+-- The group's tank, from our boxes only: the start is handed to the MA by /bct, and a
+-- merc or an outside player cannot run it. The Main Tank role if a box holds it, else the
+-- Main Assist if it is a box of a tank class, else the first box of a tank class (us
+-- first). nil if no box can tank.
 START.TANK_CLASS = { WAR=true, PAL=true, SHD=true }
 local function start_group_tank()
-    local mt = mq.TLO.Group.MainTank()
-    if mt and mt ~= '' then return mt end
-    local ma = mq.TLO.Group.MainAssist()
-    for i = 0, (mq.TLO.Group.Members() or 0) do
-        local m = mq.TLO.Group.Member(i)
-        if m.Name() == ma and START.TANK_CLASS[m.Class.ShortName() or ''] then return ma end
+    local reach = Core.reachable_names()
+    local function box(m)
+        local n = m.Name()
+        return n and not m.Mercenary() and reach[n:lower()]
     end
+    local function member(name)
+        for i = 0, (mq.TLO.Group.Members() or 0) do
+            local m = mq.TLO.Group.Member(i)
+            if m.Name() == name then return m end
+        end
+    end
+    local mt = mq.TLO.Group.MainTank()
+    if mt and mt ~= '' then
+        local m = member(mt)
+        if m and box(m) then return mt end
+        announce('Start: MT %s is not one of our boxes -- picking a box to tank', mt)
+    end
+    local ma = mq.TLO.Group.MainAssist()
+    local m = ma and member(ma)
+    if m and box(m) and START.TANK_CLASS[m.Class.ShortName() or ''] then return ma end
     for i = 0, (mq.TLO.Group.Members() or 0) do
-        local m = mq.TLO.Group.Member(i)
-        if START.TANK_CLASS[m.Class.ShortName() or ''] then return m.Name() end
+        m = mq.TLO.Group.Member(i)
+        if box(m) and START.TANK_CLASS[m.Class.ShortName() or ''] then return m.Name() end
     end
     return nil
 end
@@ -892,7 +969,7 @@ end
 local function start_group_roles()
     local tank = start_group_tank()
     if not tank then
-        announce_g('Start: no tank class in the group -- set MT/MA by hand, then start again')
+        announce_g('Start: none of our boxes is a tank class (mercs and outside players cannot run the start) -- set MT/MA to a box by hand, then start again')
         return false
     end
     local leader = mq.TLO.Group.Leader()
@@ -1054,7 +1131,8 @@ local function start_group_catchup()
         local out = {}
         for i = 1, (mq.TLO.Group.Members() or 0) do
             local m = mq.TLO.Group.Member(i)
-            if m.Name() and (m.Spawn.ID() or 0) == 0 then out[#out + 1] = m.Name() end
+            -- not mercs: one zones in with its owner and can't be told to say ready
+            if m.Name() and not m.Mercenary() and (m.Spawn.ID() or 0) == 0 then out[#out + 1] = m.Name() end
         end
         return out
     end
@@ -1141,6 +1219,44 @@ function Core.start_nav_clearing(spawn_name)
     return true
 end
 
+-- Before the hail inside: wait for the whole group (mercs too) to be within `radius` of
+-- us. A toon can hang up on scenery on the walk in (seen: the healer stuck on plants
+-- while the tank hailed). True once all are in; false (stragglers named) after `wait` s.
+-- Our client's copy of a far spawn's position can be stale (seen: a toon read 464 away
+-- while it stood 19 off), so a stuck reading can hold up the hail: the message gives the
+-- distance we read, to check against what that toon sees.
+START.HAIL_RANGE = 60
+START.HAIL_WAIT  = 30   -- s
+function Core.start_gather(radius, wait)
+    radius, wait = radius or START.HAIL_RANGE, wait or START.HAIL_WAIT
+    local function far()
+        local out = {}
+        for i = 1, (mq.TLO.Group.Members() or 0) do
+            local m = mq.TLO.Group.Member(i)
+            local d = m.Spawn.Distance()
+            if m.Name() and not m.Spawn.Dead() and (not d or d > radius) then
+                out[#out + 1] = d and string.format('%s %.0f', m.Name(), d) or (m.Name()..' ?')
+            end
+        end
+        return out
+    end
+    local t0, said = mq.gettime(), false
+    while true do
+        local list = far()
+        if #list == 0 then return true end
+        if (mq.gettime() - t0) > wait * 1000 then
+            announce_g('Start: %s not within %d after %ds -- NOT hailing, start by hand',
+                table.concat(list, ', '), radius, wait)
+            return false
+        end
+        if not said then
+            said = true
+            announce('Start: waiting for %s to come within %d', table.concat(list, ', '), radius)
+        end
+        mq.delay(500)
+    end
+end
+
 local function start_event()
     if not start_zone_in() then return end
     local m = mission()
@@ -1155,8 +1271,12 @@ START.LAUNCH_WAIT = 15 -- s re-pinging for a /lua run to come up
 START.pongs = {}
 local LUA_NAME = MOD:gsub('%.', '/')
 -- Start sorm on these toons (only if in game and not zoning). Harmless if already running.
+-- Our own boxes only (the callers pass reachable names). False, nothing sent, with
+-- AUTO_LAUNCH off.
 function Core.launch_sorm(names)
+    if not flags.AUTO_LAUNCH then return false end
     for _, n in ipairs(names) do bct_np(n, IF_INGAME.."/lua run %s", LUA_NAME) end
+    return true
 end
 local function start_comms_check()
     local boxes, outside = Core.group_boxes()
@@ -1183,6 +1303,11 @@ local function start_comms_check()
     end
     local out = ping(boxes)
     if #out == 0 then return true end
+    if not flags.AUTO_LAUNCH then
+        announce_g('Start: %s not running sorm -- /lua run %s there (or %s autolaunch on), then start again',
+            table.concat(out, ', '), LUA_NAME, def.cmd)
+        return false
+    end
     announce_g('Start: no answer from %s -- starting %s there', table.concat(out, ', '), LUA_NAME)
     local launch = Core.launch_sorm
     launch(out)
@@ -1225,8 +1350,9 @@ local function run_start()
     if START.busy then printf('start already running') return end
     local m = mission()
     if m and m.can_start and not m.can_start() then return end
-    START.busy = true
     local outside = not in_instance_zone()
+    if outside and not start_task_check() then return end
+    START.busy = true
     if not (start_comms_check() and start_group_roles() and start_validate(outside)) then
         START.busy = false
         return
@@ -1289,6 +1415,7 @@ end
 -- ============================================================
 
 local function event_zoned(line,arg1,arg2)
+    Core.xt_reset()   -- spawn IDs are per zone
     burn_st.active = false
     burn_st.known = {}
     for _, m in pairs(missions) do
@@ -1334,7 +1461,7 @@ end
 
 local function usage()
     local c = def.cmd
-    print('USAGE:')
+    printf('USAGE: (any unique start of %s works, e.g. /sorm)', c)
     printf('  %s ma                       --> toggle MA mode (picks targets by kill order)', c)
     printf('  %s start                    --> start the current mission (outside it: the whole group zones in first)', c)
     print('                                  runs the whole mission: stay at the keyboard and watch it')
@@ -1348,6 +1475,7 @@ local function usage()
     end
     print('  General:')
     printf('  %s set_use_eqbc on|off      --> group broadcasts over EQBC (off = DanNet)', c)
+    printf('  %s autolaunch [on|off]      --> on Start, /lua run sorm on boxes that do not answer (default on)', c)
     printf('  Now: MA %s, %s', tostring(flags.MA_MODE), flags.USE_EQBC and 'EQBC' or 'DanNet')
 end
 
@@ -1366,6 +1494,8 @@ local function bind_raid(...)
         -- zone, only 'start force' runs it again.
         if START.busy or START.queued then
             printf('start already running')
+        elseif START.complete == State.current_task and value ~= 'force' then
+            printf('mission already complete -- drop the task first (or %s start force)', def.cmd)
         elseif START.started == mq.TLO.Zone.ShortName() and value ~= 'force' then
             printf('already started here -- %s start force to run it again', def.cmd)
         else
@@ -1392,6 +1522,9 @@ local function bind_raid(...)
         if value == 'on' then flags.USE_EQBC = true
         elseif value == 'off' then flags.USE_EQBC = false end
         if flags.USE_EQBC ~= was then printf('USE_EQBC set to %s',tostring(flags.USE_EQBC)) end
+    elseif key == 'autolaunch' then
+        flags.AUTO_LAUNCH = bool_arg(value, flags.AUTO_LAUNCH)
+        printf('AUTO_LAUNCH set to %s', tostring(flags.AUTO_LAUNCH))
     elseif key == 'burn' then
         if value == 'now' then
             burn_st.pending = true
@@ -1476,6 +1609,8 @@ local function ui()
         ImGui.SameLine()
         if START.busy or START.queued then
             ImGui.TextColored(COLOR.AMBER, 'Starting...')
+        elseif START.complete == State.current_task then
+            ImGui.TextColored(COLOR.GREEN, 'Complete')
         elseif START.started == mq.TLO.Zone.ShortName() then
             ImGui.TextColored(COLOR.GREEN, 'Started')
         elseif ImGui.Button('Start Event') then
@@ -1510,6 +1645,12 @@ local function ui()
     Core.status_flag('  Debug:', def.DEBUG)
     ImGui.SameLine()
     def.DEBUG = Core.toggle_button('dbg', def.DEBUG)
+    Core.status_flag('Auto-launch:', flags.AUTO_LAUNCH)
+    ImGui.SameLine()
+    flags.AUTO_LAUNCH = Core.toggle_button('autolaunch', flags.AUTO_LAUNCH)
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('On Start: /lua run sorm on our own boxes that do not answer')
+    end
     if ImGui.RadioButton('DanNet', not flags.USE_EQBC) then
         flags.USE_EQBC = false
         bcg("%s set_use_eqbc off", def.cmd)
@@ -1559,11 +1700,22 @@ end
 -- anything else, and the rest are left as they are. Once per kill: both can fire for one.
 local completed_at = 0
 function Core.mission_complete()
+    -- Once per task, not per minute: Echo's kill event and the task step moving on can be
+    -- well over a minute apart (seen live 2026-11-19), and the second found no saved mode
+    -- and set the MA to Manual again. START.complete clears when the task is dropped.
+    if START.complete and START.complete == State.current_task then return end
     if mq.gettime() - completed_at < 60000 then return end
     completed_at = mq.gettime()
+    START.complete = State.current_task   -- the UI shows Complete until the task is dropped (Main)
     local m = START.saved_mode
     START.saved_mode = nil
     local is_ma = mq.TLO.Group.MainAssist() == def.name
+    if is_ma then
+        -- drop whatever the last pick left us on (Main no longer picks once complete)
+        reset_engage()
+        mq.cmd("/attack off")
+        mq.cmd("/squelch /target clear")
+    end
     if not m then
         if is_ma then
             cwtn('mode 0')
@@ -1584,6 +1736,7 @@ end
 local function Main()
     local was_group_ma = nil   -- nil: the first pulse always applies the role
     local was_task = nil
+    local was_active, was_active_task = nil, nil   -- last in_task, for the active/idle announce
     local was_step = nil      -- last task step, to see the boss step move on
 
     while State.OPENGUI do   -- closing the window ends the script
@@ -1591,11 +1744,16 @@ local function Main()
         while #deferred > 0 do table.remove(deferred, 1)() end
         -- left the zone a start ran in: a new instance can be started again
         if START.started and START.started ~= mq.TLO.Zone.ShortName() then START.started = nil end
+        -- The task is read every pulse, paused or not: the window shows it, and a pause
+        -- flushes the zone/assigned events that would otherwise update it (seen live
+        -- 2026-11-16: paused after Echo, took Waxwork, the window still read Echo).
+        State.current_task = read_task()
+        -- task dropped (or replaced): Complete gives way to the Start button again
+        if START.complete and START.complete ~= State.current_task then START.complete = nil end
         if flags.PAUSED then
             mq.flushevents()   -- drop what was heard while paused, so nothing fires late
             mq.delay(def.pulse)
         else
-            State.current_task = read_task()
             local m = mission()
             -- Boss death from the task, not the spawn: the Abolishion despawns every wave.
             local step = State.current_task ~= 'None' and mq.TLO.Task(State.current_task).Step() or nil
@@ -1607,14 +1765,20 @@ local function Main()
                 if boss then Core.mission_complete() end
                 was_step = step
             end
-            -- Only run inside one of this script's missions. Out of them -- another zone's
-            -- task, or none -- nothing but events runs, so MA does not take over targeting outside
-            local in_task = m ~= nil
+            -- Only act inside one of this script's missions: our task AND a *_mission zone.
+            -- Holding the task in the live zone (before the start, or after, until it is
+            -- dropped) runs nothing but events and idle_pulse checks, so the MA does not
+            -- pick targets out there.
+            local in_task = m ~= nil and Core.in_mission_zone()
             if State.current_task ~= was_task then
                 was_task = State.current_task
-                announce('Task "%s": %s', tostring(State.current_task), in_task and 'active' or 'not one of ours, idle')
-                if not in_task then reset_engage() end
                 if m and m.enter then m.enter() end
+            end
+            if in_task ~= was_active or State.current_task ~= was_active_task then
+                was_active, was_active_task = in_task, State.current_task
+                announce('Task "%s": %s', tostring(State.current_task),
+                    in_task and 'active' or (m and 'held, not in the mission zone -- idle' or 'not one of ours, idle'))
+                if not in_task then reset_engage() end
             end
             -- MA mode follows the group's Main Assist role.
             local is_ma = mq.TLO.Group.MainAssist() == def.name
@@ -1624,19 +1788,24 @@ local function Main()
                 announce('%s group MA: MA mode %s', is_ma and 'Now' or 'No longer', is_ma and 'on' or 'off')
                 if m and m.ma_changed then m.ma_changed(is_ma) end
             end
-            if m and m.pre_pulse then m.pre_pulse() end
-            if in_task and flags.MA_MODE and not (m.hold and m.hold()) then
+            if in_task and m.pre_pulse then m.pre_pulse() end
+            -- Mission complete: the MA stands down. Echo's phase 2 picker takes any 'an echo'
+            -- spawn, and once the real one died it found another (far off, inanimate) and kept
+            -- engaging it (seen live 2026-11-16, twice).
+            local done = START.complete == State.current_task
+            if in_task and flags.MA_MODE and not done and not (m.hold and m.hold()) then
                 pick_target()
                 BOXR_RG.close_in()   -- RGMercs MA only: walk in to a target out of reach
             end
             mq.doevents()   -- always: the zone/task events are what set current_task
 
+            if m and m.idle_pulse then m.idle_pulse() end
             if in_task then
                 check_burn()
                 if m.pulse then m.pulse() end
             end
 
-            -- jittered so the toons do not all pulse in step
+            -- jittered so the toons do not all pulse in lockstep
             mq.delay(def.pulse + math.random(0, 150))
         end
     end

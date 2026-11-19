@@ -19,7 +19,8 @@ kill_order[W.TASK] = {"Waxwork_Lancer","Waxwork_Igniter","Waxwork_Trapper","Waxw
 -- won by having them all low together, then finishing them fast. Two phases per wave:
 --  * balance: until an add dies, keep their HP close by rotating over the healthiest:
 --    polled from xtarget every pulse, the MA swaps off its current add onto the highest of
---    the rest (no engage() delays -- they drop quickly).
+--    the rest (no engage() delays -- they drop quickly). Except when the highest leads the
+--    next one down by SPREAD or more: then onto it and stay until the lead is under SPREAD.
 --  * finish: once one has died, lowest HP first, to kill as many as possible before the
 --    rest despawn.
 -- The wave ends when no add is left on xtarget; a later wave starts in balance again.
@@ -84,7 +85,22 @@ local function check_wax_aa()
     end
 end
 
+local wax_balance_decide   -- below: the pick itself
+
 local function wax_balance_pick()
+    -- At most once per Main cycle, whoever calls it (Main's pick, or the back-off hold
+    -- that blocks Main): one shared clock, so the hold's last pick and Main's pick just
+    -- after it cannot land back to back. Main's cycle is never shorter than def.pulse;
+    -- the 50 ms keeps a normal cycle from being skipped. Between picks, stay put and give
+    -- Main the last pick's answer, or it would run its own kill-order pick instead.
+    local now = mq.gettime()
+    if now < (wax_st.next_pick or 0) then return wax_st.last_result end
+    wax_st.next_pick = now + def.pulse - 50
+    wax_st.last_result = wax_balance_decide()
+    return wax_st.last_result
+end
+
+wax_balance_decide = function()
     local set = wax_live_adds()
     if #set == 0 then   -- wave over (or not live yet): next wave starts in balance
         if wax_st.finishing then announce('Balance: wave over') end
@@ -98,8 +114,8 @@ local function wax_balance_pick()
     end
     local tid = mq.TLO.Target.ID()
     local function switch_to(s, why)
+        if not ma_target(s.id) then return end   -- not targetable: no attack onto the old one
         State.assigned_target, State.current_target_priority = s.id, 0
-        ma_target(s.id)
         -- auto attack carries over to the new target: only send it when it is off
         if not mq.TLO.Me.Combat() then mq.cmd("/attack on") end
         -- balance switches every pulse: log at most once a second
@@ -132,9 +148,20 @@ local function wax_balance_pick()
     -- pulse, so the real gap rounds up to the next pulse. A 1s minimum gap once let the
     -- spread reach 42% (2026-11-06), but at 700+250 the spread held 7-8% over two runs
     -- (2026-11-11, measured gaps ~1.0-1.4s median).
+    -- Exception: the highest add leads the next one down by SPREAD or more -- an outlier
+    -- (a late add going live, or one the rotation missed). Go to it and stay on it until
+    -- the lead drops under SPREAD, then rotate again.
     local now = mq.gettime()
-    if now < (wax_st.next_switch or 0) then return true end
     table.sort(set, function(a, b) return a.hp > b.hp end)
+    local top = set[1]
+    if top.hp - set[2].hp >= wax_st.SPREAD then
+        if top.id == tid then return true end   -- on the outlier: stay
+        if now < (wax_st.next_switch or 0) then return true end
+        switch_to(top, string.format('outlier, +%d%% over next', top.hp - set[2].hp))
+        wax_st.next_switch = now + wax_st.SWITCH_GAP + math.random(0, wax_st.SWITCH_JITTER)
+        return true
+    end
+    if now < (wax_st.next_switch or 0) then return true end
     for _, s in ipairs(set) do
         if s.id ~= tid then
             switch_to(s, string.format('spread %d%%', wax_st.spread))
@@ -252,10 +279,13 @@ end
 local function wax_group_manual(on)
     if not on and not wax_back.group_manual then return end
     wax_back.group_manual = on
+    local reach = Core.reachable_names()   -- our boxes only: not mercs or outside players
     for i = 1, (mq.TLO.Group.Members() or 0) do
         local m = mq.TLO.Group.Member(i)
         local name, cls = m.Name(), m.Class.ShortName()
-        if name and cls then Core.bct_mode(name, cls, on and 'mode 0' or 'mode 2', on and 'manual' or 'chase') end
+        if name and cls and not m.Mercenary() and reach[name:lower()] then
+            Core.bct_mode(name, cls, on and 'mode 0' or 'mode 2', on and 'manual' or 'chase')
+        end
     end
 end
 
@@ -300,8 +330,17 @@ local function check_wax_backoff()
         announce_g('wax backoff error: %s', tostring(err))
         if mq.TLO.Navigation.Active() then mq.cmd("/nav stop") end
     end
+    -- The waits below block Main, so the MA keeps balancing from in here: targets only,
+    -- Manual does not move us. At Main's own pace -- one pick per def.pulse + jitter, as
+    -- if Main were running -- not every 250 ms wait; the switch gap applies on top.
+    local function hold_wait(ms)
+        if flags.MA_MODE and flags.WAX_BALANCE then wax_balance_pick() end   -- self-paced
+        mq.delay(ms)
+    end
     local tl = mq.gettime()
-    mq.delay(WAX.LIVE_MAX, function() return #wax_live_adds() >= #wax_spawned_adds() end)
+    while mq.gettime() - tl < WAX.LIVE_MAX and #wax_live_adds() < #wax_spawned_adds() do
+        hold_wait(250)
+    end
     -- Live: the summons start. Flutter back out whenever one has pulled us into the pack,
     -- until they are all in front and in reach. Only short steps, and only with every add
     -- in reach: an add we step out of melee range of summons us straight back.
@@ -313,11 +352,11 @@ local function check_wax_backoff()
             local front, uy, ux = wax_in_front(live)
             local closed = wax_adds_closed()
             if not front and closed then
-                if wax_step(uy, ux, WAX.STEP) then flutters = flutters + 1 else mq.delay(250) end
+                if wax_step(uy, ux, WAX.STEP) then flutters = flutters + 1 else hold_wait(250) end
             elseif front and closed and mq.gettime() - t0 >= WAX.HOLD then
                 return
             else
-                mq.delay(250)
+                hold_wait(250)
             end
         end
     end)
@@ -332,13 +371,79 @@ local function check_wax_backoff()
     wax_group_manual(false)
 end
 
+-- Summons. Each add summons the tank onto itself ('You will not evade me, <name>!' then
+-- 'You have been summoned!'), which drops us in the middle of the pack with adds behind
+-- -- all wave long, not just in the back-off's hold (seen live 2026-11-19: summons after
+-- the hold, the tank back in SicTank and surrounded). So on every summon while a wave is
+-- up: Manual, one short step back out of the pack's middle, then the mode we were in.
+-- Only with every add in reach -- one we step out of range of summons us right back -- so
+-- a summon is retried for up to WAX.SUMMON_RETRY ms while they close up. During the
+-- back-off's hold this never runs (it blocks Main); the hold's flutter covers it there.
+-- In practice this rarely steps: the adds settle 2-12 off on all sides of the tank, in
+-- reach, and the summons stop. That partial surround is accepted (2026-11-19) -- do not
+-- try to step out of it, any step leaves one out of reach and starts a summon loop.
+local wax_summon = { at = nil }
+WAX.SUMMON_RETRY = 3000
+
+-- True if, from the spot a step of `dist` along (uy, ux) would leave us, every live add
+-- is still within its MaxRange of us -- no slack.
+local function wax_step_safe(uy, ux, dist)
+    local my, mx = mq.TLO.Me.Y(), mq.TLO.Me.X()
+    if not (my and mx) then return false end
+    local ty, tx = my + uy * dist, mx + ux * dist
+    for _, a in ipairs(wax_live_adds()) do
+        local s = mq.TLO.Spawn(a.id)
+        local y, x = s.Y(), s.X()
+        if not (y and x) then return false end
+        if Core.dist_yx(y, x, ty, tx) > (s.MaxRange() or 15) then return false end
+    end
+    return true
+end
+
+local function wax_summoned()
+    if State.current_task ~= W.TASK or mq.TLO.Group.MainTank() ~= def.name then return end
+    wax_summon.at = mq.gettime()
+end
+
+local function check_wax_summon()
+    if not wax_summon.at then return end
+    if State.current_task ~= W.TASK or mq.gettime() - wax_summon.at > WAX.SUMMON_RETRY then
+        wax_summon.at = nil
+        return
+    end
+    local live = wax_live_adds()
+    if #live < 2 then wax_summon.at = nil return end
+    local front, uy, ux = wax_in_front(live)
+    if front then wax_summon.at = nil return end
+    -- Only a step that leaves EVERY add within its own melee reach: an add we step out of
+    -- reach of summons us straight back, and the step turns into a summon loop (seen live
+    -- 2026-11-19: adds spread 2-26 off, step -> summon -> step five times in a row).
+    if not wax_step_safe(uy, ux, WAX.STEP) then return end   -- retry next pulse
+    wax_summon.at = nil
+    local m = Core.get_cwtn_mode()
+    local manual = (m == 'Manual')
+    if not manual then cwtn('mode 0') end
+    local ok, err = pcall(wax_step, uy, ux, WAX.STEP)
+    if not ok then
+        announce_g('wax summon step error: %s', tostring(err))
+        if mq.TLO.Navigation.Active() then mq.cmd("/nav stop") end
+    end
+    announce('Waxwork: summoned into the pack -- stepped back out (%d adds)', #live)
+    if not manual then Core.set_mode(m) end
+end
+
 -- ============================================================
 -- Mission hooks (see init.lua)
 -- ============================================================
 
+function W.events()
+    mq.event('wax_summoned', '#*#You have been summoned!#*#', wax_summoned)
+end
+
 function W.pre_pulse()
     check_wax_aa()
     check_wax_backoff()
+    check_wax_summon()
 end
 
 function W.pick()
@@ -349,6 +454,7 @@ end
 -- Abolishion, the walk stops and kills anything on the hate list that is not him.
 function W.start()
     Core.start_nav_clearing('abolishion')
+    if not Core.start_gather() then return end
     local abo = mq.TLO.Spawn("npc Abolishion")
     if not (abo() and Core.safe_target(abo.ID())) then
         announce_g('Start: the Abolishion is not in reach -- start it by hand')

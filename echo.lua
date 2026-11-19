@@ -78,9 +78,8 @@ local function leave_greedling()
     -- RGMercs would auto-target it straight back: ignore it for the session there
     if Core.rgmercs_lua() and (mq.TLO.Target.ID() or 0) > 0 then mq.cmdf("/rgl ignoretarget %d", mq.TLO.Target.ID()) end
     local echo = echo_boss()
-    if echo then
+    if echo and Core.ma_target(echo.ID()) then
         debug_local('leaving the greedling alone, swapping to the Echo')
-        Core.ma_target(echo.ID())
     else
         debug_local('leaving the greedling alone, self-targeting')
         if (get_cwtn_mode() or ''):find('Sic') then
@@ -734,7 +733,10 @@ local function echo_illusion_check(auto)
     -- poll, handles their own illusion, and does not fail the check
     local reach, members, outside = Core.reachable_names(), { def.name }, {}
     for i = 1, (mq.TLO.Group.Members() or 0) do
-        local n = mq.TLO.Group.Member(i).Name()
+        local m = mq.TLO.Group.Member(i)
+        -- a merc cannot take an illusion, and does not need one: a merc left as its own
+        -- race went through the Dark Stranger room with no failure (live 2026-11-19)
+        local n = not m.Mercenary() and m.Name()
         if n and reach[n:lower()] then members[#members + 1] = n
         elseif n then outside[#outside + 1] = n end
     end
@@ -772,9 +774,8 @@ local function echo_illusion_check(auto)
     -- No answer: that box is stuck or its client is not taking commands. Start sorm on it
     -- (the same push as the start's comms check) and ask once more.
     local quiet = silent()
-    if #quiet > 0 then
+    if #quiet > 0 and Core.launch_sorm(quiet) then   -- false with AUTO_LAUNCH off
         announce_g('Echo: no item answer from %s -- starting sorm there and asking again', table.concat(quiet, ', '))
-        Core.launch_sorm(quiet)
         mq.delay(ECHO.RELAUNCH_WAIT * 1000)
         poll()
     end
@@ -900,7 +901,7 @@ local function echo_outside_check()
     for i = 1, (mq.TLO.Group.Members() or 0) do
         local m = mq.TLO.Group.Member(i)
         local name, race = m.Name(), m.Spawn.Race()
-        if name and not reach[name:lower()] and not (race and race:find(want)) then
+        if name and not m.Mercenary() and not reach[name:lower()] and not (race and race:find(want)) then
             bad[#bad + 1] = string.format('%s (%s)', name, tostring(race or 'not in zone'))
         end
     end
@@ -1051,13 +1052,27 @@ local function do_echo_room()
         announce_g('Echo: %s could not get back to the middle (%s) -- left in Manual, move me and set my mode',
             def.name, tostring(echo_where()))
     else
-        Core.fight_mode()   -- the group Chases the MA onto the Echo
         -- After a quiet room (north, nobody fights) the Echo may be off the hate list, and
         -- pick_target only takes xtarget mobs, so the MA would wait for it to aggro on its
         -- own. Engage it by spawn instead.
+        -- The MA walks up to it first, still in Manual: SicTank camps where its mode is set,
+        -- and a camp at the port spot can leave the Echo outside the camp radius; the
+        -- target also only takes within TARGET_RANGE unless it is on xtarget (seen live
+        -- 2026-11-12, back from west and the MA never re-engaged).
         local e = echo_boss()
+        if e and flags.MA_MODE and not e.Dead() then
+            mq.cmdf("/nav id %d distance=15 log=off", e.ID())
+            Core.wait_nav(30)
+        end
+        Core.fight_mode()   -- the group Chases the MA onto the Echo
+        if flags.MA_MODE then cwtn("resetcamp") end   -- camp here, on the Echo
         if e and flags.MA_MODE then
-            Core.engage(e.ID(), 0)
+            -- engage, and again if the target or attack did not take
+            for _ = 1, 3 do
+                Core.engage(e.ID(), 0)
+                if mq.TLO.Target.ID() == e.ID() and mq.TLO.Me.Combat() then break end
+                announce('Echo: target/attack on the Echo did not take, retrying')
+            end
         elseif e and safe_target(e.ID()) then
             mq.delay(200)
             mq.cmd("/attack on")
@@ -1500,14 +1515,19 @@ function E.pick()
     return false
 end
 
-function E.pulse()
+-- Any zone while the task is held: the pre-start checks (warnings only)
+function E.idle_pulse()
     -- Skeleton / Jann picked in the UI: check the group carries it (blocks, so not in the UI)
     if echo_st.illusion_check_pending then
         echo_illusion_check(true)
         echo_st.illusion_check_pending = false
     end
-    check_illusion()
     echo_outside_check()
+end
+
+-- In the mission zone only
+function E.pulse()
+    check_illusion()
     check_echo_port_down()
     check_wax_burn()
     if echo_st.pending then

@@ -217,6 +217,10 @@ local function go_to_circle()
         return
     end
     local sid = spawn.ID()
+    -- Pinned to this call by ID from here on: NearestSpawn re-resolves on every read, and
+    -- another call coming up would keep the loop going (and the distance checks) on it
+    -- while the nav points at sid
+    spawn = mq.TLO.Spawn(sid)
     flags.DOING_CIRCLE = true
     Core.pause()
 
@@ -226,7 +230,7 @@ local function go_to_circle()
     debug_local('Navigating to circle(init)')
     Core.wait_nav()
     local t0 = mq.gettime()
-    while (spawn() ~= nil) do
+    while spawn() and not spawn.Dead() do
         if mq.TLO.Me.Dead() then
             announce_g('Died in the Storm Call circle -- giving up on it')
             break
