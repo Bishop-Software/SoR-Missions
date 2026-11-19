@@ -932,9 +932,10 @@ local function start_group_pause(on, only)
 end
 
 -- The group's tank, from our boxes only: the start is handed to the MA by /bct, and a
--- merc or an outside player cannot run it. The Main Tank role if a box holds it, else the
--- Main Assist if it is a box of a tank class, else the first box of a tank class (us
--- first). nil if no box can tank.
+-- merc or an outside player cannot run it. The Main Tank role if a box holds it; a merc MT
+-- with a box as MA keeps both roles as they are and returns the MA (second value true);
+-- else the Main Assist if it is a box of a tank class, else the first box of a tank class
+-- (us first). nil if no box can tank.
 START.TANK_CLASS = { WAR=true, PAL=true, SHD=true }
 local function start_group_tank()
     local reach = Core.reachable_names()
@@ -949,13 +950,24 @@ local function start_group_tank()
         end
     end
     local mt = mq.TLO.Group.MainTank()
-    if mt and mt ~= '' then
-        local m = member(mt)
-        if m and box(m) then return mt end
-        announce('Start: MT %s is not one of our boxes -- picking a box to tank', mt)
-    end
     local ma = mq.TLO.Group.MainAssist()
-    local m = ma and member(ma)
+    local m = ma and ma ~= '' and member(ma)
+    if mt and mt ~= '' then
+        local t = member(mt)
+        if t and box(t) then return mt end
+        -- A merc MT, with one of our boxes as MA: keep that setup -- the user's choice. The
+        -- merc stays MT, the MA runs the start and the targeting. A limitation of it: the
+        -- tank moves (Waxwork's step-out and summon steps, keyed on the MT role) need a toon
+        -- that takes commands, so they do not run.
+        if t and t.Mercenary() and m and box(m) then
+            announce_g('Start: MT %s is a mercenary -- leaving it as MT, the group MA %s runs the start. A merc takes no commands, so the tank moves (step-outs, summon steps) will not run',
+                mt, ma)
+            return ma, true
+        end
+        announce_g('Start: MT %s is %s -- picking one of our boxes to be MT and MA',
+            mt, (t and t.Mercenary()) and 'a mercenary and the MA is not one of our boxes'
+                or 'not one of our boxes (it cannot take commands)')
+    end
     if m and box(m) and START.TANK_CLASS[m.Class.ShortName() or ''] then return ma end
     for i = 0, (mq.TLO.Group.Members() or 0) do
         m = mq.TLO.Group.Member(i)
@@ -967,11 +979,13 @@ end
 -- The tank made MT + MA if it is not already. Roles can only be set by the group leader:
 -- sent to it if not us. False if there is no tank or the roles did not take.
 local function start_group_roles()
-    local tank = start_group_tank()
+    local tank, merc_mt = start_group_tank()
     if not tank then
         announce_g('Start: none of our boxes is a tank class (mercs and outside players cannot run the start) -- set MT/MA to a box by hand, then start again')
         return false
     end
+    -- merc MT kept: no roles to change, the MA is already one of our boxes
+    if merc_mt then return true end
     local leader = mq.TLO.Group.Leader()
     local function role(n)
         if leader == def.name then mq.cmdf("/grouproles set %s %d", tank, n)
