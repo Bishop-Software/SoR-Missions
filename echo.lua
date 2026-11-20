@@ -203,6 +203,13 @@ local function echo_click_switch(loc, label, ma_first)
     local function too_far()
         local len = mq.TLO.Navigation.PathLength(string.format('locyxz %.1f %.1f %.1f', loc[1], loc[2], loc[3]))() or -1
         if len > ECHO.SWITCH_NAV_MAX then
+            -- A room switch measured from the middle: a summon landed after echo_port saw us
+            -- in the room. echo_port takes 'far' as done if we are where we wanted to be, so
+            -- no "move me" for that (seen live 2026-11-20, summoned out of south)
+            if not ma_first and echo_where() == 'center' then
+                debug_local('Echo: summoned to the middle before the %s switch -- not going back', label)
+                return true
+            end
             announce_g('Echo: the %s switch is %.0f away by nav -- not walking the labyrinth, move me by hand', label, len)
             return true
         end
@@ -924,6 +931,25 @@ local function group_missing_illusion()
     return out
 end
 
+-- The group's most common race, over members in the zone (mercs left out: a merc of its
+-- own race went through south unharmed). nil on a tie or an empty count: no clear
+-- majority to test against, so nobody sits out on it.
+local function group_common_race()
+    local count = {}
+    local function add(r) if r then count[r] = (count[r] or 0) + 1 end end
+    add(mq.TLO.Me.Race())
+    for i = 1, (mq.TLO.Group.Members() or 0) do
+        local m = mq.TLO.Group.Member(i)
+        if not m.Mercenary() then add(m.Spawn.Race()) end
+    end
+    local best, n, tie = nil, 0, false
+    for r, c in pairs(count) do
+        if c > n then best, n, tie = r, c, false
+        elseif c == n then tie = true end
+    end
+    return not tie and best or nil
+end
+
 local function names(list)
     local t = {}
     for _, m in ipairs(list) do t[#t + 1] = m.name end
@@ -1002,7 +1028,17 @@ local function do_echo_room()
     -- The Dark Stranger banishes anyone not wearing the illusion, so make sure of it
     -- (clicking the item if needed) before transit, and sit south out without it.
     local skip = false
-    if dir == 'south' and State.current_task == "Echo of Hate" then
+    if dir == 'south' and State.current_task == "Echo of Hate" and flags.ILLUSION_OTHER then
+        -- Other: the players picked the illusion (campfire, own item), so there is no item
+        -- race to test -- test what the Dark Stranger does, the group's most common race
+        local common, mine = group_common_race(), mq.TLO.Me.Race()
+        if common and mine ~= common then
+            announce_g('Echo: %s is %s, not the group\'s %s -- staying in the middle for south',
+                def.name, tostring(mine), common)
+            skip = true
+            sit_out()
+        end
+    elseif dir == 'south' and State.current_task == "Echo of Hate" then
         echo_reillusion()
         echo_group_illusion()
         if not has_illusion() then
@@ -1746,12 +1782,18 @@ function E.ui()
     if ImGui.Button((flags.P2_FULLBURN and 'Disable' or 'Enable')..'###p2burn') then
         Core.bcg("%s p2burn %s", def.cmd, flags.P2_FULLBURN and 'off' or 'on')
     end
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('Enable to Ignore all adds and burn Echo from the start of P2')
+    end
 
     ImGui.Separator()
     ImGui.Text('Rooms:')
+    -- done: faded; in progress (next is bumped when the run sets off): purple; next up:
+    -- amber; still to come: plain
     for i, dir in ipairs(ECHO.order) do
         ImGui.SameLine()
-        if i < echo_st.next then ImGui.TextDisabled(dir)
+        if flags.ECHO_RUNNING and i == echo_st.next - 1 then ImGui.TextColored(COLOR.PURPLE, '<'..dir..'>')
+        elseif i < echo_st.next then ImGui.TextDisabled(dir)
         elseif i == echo_st.next then ImGui.TextColored(COLOR.AMBER, '['..dir..']')
         else ImGui.Text(dir) end
     end

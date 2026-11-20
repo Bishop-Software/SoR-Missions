@@ -1,5 +1,5 @@
 print('====== SoR Missions =======')
-print('version 0.981' )
+print('version 0.982' )
 print('by nerp')
 print('=======================')
 print('/sormissions (or just /sorm) for help')
@@ -81,7 +81,7 @@ local flags = {
     USE_SKEL = true,     -- Echo of Hate illusion: true = skeleton, false = Jann
     ILLUSION_OTHER = true,  -- Echo of Hate: players handle the illusion themselves; sorm neither checks nor clicks it (default)
     USE_EQBC = false,       -- group broadcasts over EQBC instead of DanNet (UI radio / set_use_eqbc)
-    AUTO_LAUNCH = true,     -- start / Echo item check: /lua run sorm on our own boxes that do
+    AUTO_LAUNCH = true,     -- start / Echo item check: /lua run sor-missions on our own boxes that do
                             -- not answer (only ever after Start is clicked); off = name them only
     ANNO = true, --basic info
 }
@@ -1489,7 +1489,7 @@ local function usage()
     end
     print('  General:')
     printf('  %s set_use_eqbc on|off      --> group broadcasts over EQBC (off = DanNet)', c)
-    printf('  %s autolaunch [on|off]      --> on Start, /lua run sorm on boxes that do not answer (default on)', c)
+    printf('  %s autolaunch [on|off]      --> on Start, /lua run sor-missions on boxes that do not answer (default on)', c)
     printf('  Now: MA %s, %s', tostring(flags.MA_MODE), flags.USE_EQBC and 'EQBC' or 'DanNet')
 end
 
@@ -1610,6 +1610,7 @@ local function ui()
         COLOR.GREY  = ImVec4(0.6, 0.6, 0.6, 1)
         COLOR.AMBER = ImVec4(1, 0.7, 0.1, 1)
         COLOR.RED   = ImVec4(1, 0.2, 0.2, 1)
+        COLOR.PURPLE = ImVec4(0.75, 0.45, 1, 1)
     end
     State.OPENGUI, State.DRAWGUI = ImGui.Begin('SoR Missions', State.OPENGUI)
     if not State.DRAWGUI then ImGui.End() return end
@@ -1640,8 +1641,13 @@ local function ui()
     ImGui.Text('  ')
     ImGui.SameLine()
     -- '/sorm pause' rather than flipping the flag here, so it prints the same as the command
-    if ImGui.Button((flags.PAUSED and 'Resume' or 'Pause') .. '###pause') then
+    if ImGui.Button((flags.PAUSED and 'Resume Self' or 'Pause') .. '###pause') then
         mq.cmdf('%s pause %s', def.cmd, flags.PAUSED and 'off' or 'on')
+    end
+    -- the whole group, self included: each box runs its own '/sorm pause'
+    ImGui.SameLine()
+    if ImGui.Button((flags.PAUSED and 'Resume Group' or 'Pause All') .. '###pauseall') then
+        Core.bcg('%s pause %s', def.cmd, flags.PAUSED and 'off' or 'on')
     end
     --ImGui.SameLine()
     --if flags.PAUSED then ImGui.TextColored(COLOR.RED, 'PAUSED') else ImGui.TextColored(COLOR.GREEN, 'RUNNING') end
@@ -1663,7 +1669,7 @@ local function ui()
     ImGui.SameLine()
     flags.AUTO_LAUNCH = Core.toggle_button('autolaunch', flags.AUTO_LAUNCH)
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('On Start: /lua run sorm on our own boxes that do not answer')
+        ImGui.SetTooltip('On Start: /lua run sor-missions on our own boxes that do not answer')
     end
     if ImGui.RadioButton('DanNet', not flags.USE_EQBC) then
         flags.USE_EQBC = false
