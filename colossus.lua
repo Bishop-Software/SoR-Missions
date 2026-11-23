@@ -219,7 +219,7 @@ end
 
 local function do_colossus_drag(c)
     local tid = mq.TLO.Target.ID()
-    announce('Aura: dragging the Colossus to the %s for its %s', c.aura, c.buff)
+    announce('Colossus: dragging the Colossus to the %s aura for its %s', (c.aura:gsub('_', ' ')), c.buff)
     do_aura_follow(c.aura, tid, function()
         return mq.TLO.Target.ID() == tid and mq.TLO.Target.Buff(c.buff)() ~= nil
     end, AURA.DRAG_MAX)
@@ -244,17 +244,18 @@ local function go_to_colossus()
     -- pets left over from the workers would open on him before we get there
     Core.bcg("/pet back off")
     Core.bcg("/swarm leave")
-    mq.cmdf("/nav id %d distance=%d %s", col.ID(), reach, tow_nav_opts())
+    -- walking forward: nothing to tow yet, he is not on us
+    mq.cmdf("/nav id %d distance=%d log=off", col.ID(), reach)
     Core.wait_nav()
     safe_target(col.ID())
-    mq.cmdf("/face fast id %d", col.ID())   -- the backward walk can end facing away
+    mq.cmdf("/face fast id %d", col.ID())
 end
 
 local function do_aura_run()
     while true do
         local pair, wid = next_worker()
         if pair then
-            announce('Aura: to the %s for the %s', pair.aura, pair.worker)
+            announce('Colossus: dragging the %s to the %s aura', pair.worker, (pair.aura:gsub('_', ' ')))
             do_aura_station(pair, wid)
             aura_st.did_workers = true
         elseif colossus_wanted() then
@@ -312,8 +313,8 @@ end
 -- Hail Torm: "now" makes the workers killable and they aggro. The tank's check_auras
 -- takes it from there (nearest aura, its worker, then the other).
 function CO.start()
-    mq.cmd("/nav locyxz -415 1825 1775 distance=10 log=off")
-    Core.wait_nav(60)
+    -- Torm is in reach from the zone-in: target and hail from where we land
+    announce_g('Start: Hailing Torm')
     local torm = mq.TLO.Spawn("npc Torm")
     if not (torm() and safe_target(torm.ID())) then
         announce_g('Start: Torm not in reach -- start it by hand')

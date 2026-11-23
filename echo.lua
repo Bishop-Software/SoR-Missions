@@ -27,6 +27,8 @@ Core.kill_order[E.TASK] = {"a_rageling","a_spiteling","a_greedling","a_grudgelin
 
 ECHO.order = {'north', 'east', 'south', 'west'}
 echo_st.next = 1   -- index into ECHO.order of the room the next emote sends us to
+-- Directions stay lowercase as keys; this is for messages and the UI only ('north' -> 'North')
+local function cap(s) return (tostring(s):gsub('^%l', string.upper)) end
 ECHO.center = {8, 3, -23}
 ECHO.inner_switch = {
     south = {-111, 3, -23},
@@ -150,11 +152,11 @@ local function echo_wait_ma_port(label)
         return y and x and Core.dist_yx(y, x, ECHO.center[1], ECHO.center[2]) > ECHO.CENTER_MAX or false
     end
     if ma_gone() then return end
-    announce('Echo: on the %s switch, waiting for %s to port first', label, ma)
+    announce('Echo: on the %s switch, waiting for %s to port first', cap(label), ma)
     local t0 = mq.gettime()
     while not ma_gone() and not echo_st.abort do
         if (mq.gettime() - t0) > ECHO.MA_PORT_WAIT * 1000 then
-            announce_g('Echo: %s has not ported after %ds -- clicking the %s switch anyway', ma, ECHO.MA_PORT_WAIT, label)
+            announce_g('Echo: %s has not ported after %ds -- clicking the %s switch anyway', ma, ECHO.MA_PORT_WAIT, cap(label))
             return
         end
         mq.delay(100)
@@ -210,7 +212,7 @@ local function echo_click_switch(loc, label, ma_first)
                 debug_local('Echo: summoned to the middle before the %s switch -- not going back', label)
                 return true
             end
-            announce_g('Echo: the %s switch is %.0f away by nav -- not walking the labyrinth, move me by hand', label, len)
+            announce_g('Echo: the %s switch is %.0f away by nav -- not walking the labyrinth, move me by hand', cap(label), len)
             return true
         end
     end
@@ -223,11 +225,11 @@ local function echo_click_switch(loc, label, ma_first)
         if leg > 1 and too_far() then return false, 'far' end
         Core.remove_selos()
         if not nav_to_loc(loc[1], loc[2], loc[3]) then
-            announce_g('Echo: no nav path to the %s switch', label)
+            announce_g('Echo: no nav path to the %s switch', cap(label))
             return false, 'nopath'
         end
         if echo_wait_nav_or_summon() then
-            announce_g('Echo: %s teleported on the way to the %s switch -- not walking back to it', def.name, label)
+            announce_g('Echo: %s teleported on the way to the %s switch -- not walking back to it', def.name, cap(label))
             return false, 'summoned'
         end
         mq.delay(1000, function() return not mq.TLO.Me.Moving() end)
@@ -235,7 +237,7 @@ local function echo_click_switch(loc, label, ma_first)
         debug_local('Echo: %.0f off the %s switch after nav (leg %d)', dist2d(loc[1], loc[2]), label, leg)
     end
     if dist2d(loc[1], loc[2]) > 20 then
-        announce_g('Echo: could not stop on the %s switch (%.0f off)', label, dist2d(loc[1], loc[2]))
+        announce_g('Echo: could not stop on the %s switch (%.0f off)', cap(label), dist2d(loc[1], loc[2]))
         return false, 'miss'
     end
     if ma_first then echo_wait_ma_port(label) end
@@ -256,7 +258,7 @@ local function echo_click_switch(loc, label, ma_first)
         return false, 'miss'
     end
     if (d.Distance() or 999) > 20 then
-        announce_g('Echo: the %s switch is out of reach (%.0f)', label, d.Distance() or 999)
+        announce_g('Echo: the %s switch is out of reach (%.0f)', cap(label), d.Distance() or 999)
         return false, 'miss'
     end
     -- a click made mid-cast is refused, and would read as a port that never came
@@ -266,7 +268,7 @@ local function echo_click_switch(loc, label, ma_first)
     -- and a second click while it is still coming spends another of the switch's uses.
     mq.delay(ECHO.PORT_WAIT * 1000, jumped)
     if jumped() then return true end
-    announce_g('Echo: clicked the %s switch, no port after %ds', label, ECHO.PORT_WAIT)
+    announce_g('Echo: clicked the %s switch, no port after %ds', cap(label), ECHO.PORT_WAIT)
     return false, 'noport'
 end
 
@@ -300,7 +302,7 @@ local function echo_port(want)
         local loc = in_room and ECHO.room_switch[here] or ECHO.inner_switch[want]
         local key = in_room and ('room ' .. here) or ('inner ' .. want)
         if (clicks[key] or 0) >= ECHO.CLICK_MAX then
-            announce_g('Echo: clicked the %s switch %d times with no port -- giving up on it', label, clicks[key])
+            announce_g('Echo: clicked the %s switch %d times with no port -- giving up on it', cap(label), clicks[key])
             break
         end
         local ok, why = echo_click_switch(loc, label, not in_room)
@@ -316,7 +318,7 @@ local function echo_port(want)
             here = echo_where()
         end
         debug_local('Echo: wanted %s, now in %s (try %d, %s)', want, tostring(here), attempt, tostring(why or 'ported'))
-        announce('Echo: Used %s crystal, now in %s', want, tostring(here))
+        announce('Echo: Used %s crystal, now in %s', cap(want), cap(here))
     end
     if here == want then return true end
     announce_g('Echo: could not get to %s -- move me by hand', want)
@@ -448,7 +450,7 @@ local function echo_room(dir)
         if cy and cx and py and px and Core.dist_yx(cy, cx, py, px) > ECHO.SUMMON_JUMP
            and not echo_st.summoned then
             echo_st.summoned = true
-            announce_g('Echo: %s summoned out of the %s room', def.name, dir)
+            announce_g('Echo: %s summoned out of the %s room', def.name, cap(dir))
         end
         py, px = cy, cx
         -- The Echo can summon someone to the middle mid-room. In a Chase fight mode that
@@ -467,7 +469,7 @@ local function echo_room(dir)
                 cwtn("mode 0")
                 if me_out then mq.cmd("/attack off") end
                 announce_g('Echo: %s pulled to the middle during the %s room -- %s holding in Manual',
-                    me_out and def.name or ma, dir, def.name)
+                    me_out and def.name or ma, cap(dir), def.name)
             end
         end
         if mob then
@@ -481,7 +483,7 @@ local function echo_room(dir)
                     local path = mq.TLO.Navigation.PathLength('id '..mob.ID())() or -1
                     if dist2d(ECHO.center[1], ECHO.center[2]) < ECHO.CENTER_MAX
                        or echo_nearest_room() ~= dir then
-                        announce_g('Echo: not in the %s room -- not running to %s', dir, name)
+                        announce_g('Echo: not in the %s room -- not running to %s', cap(dir), name)
                     elseif path < 0 or path > ECHO.MINI_NAV_MAX then
                         announce_g('Echo: %s is %s away by nav -- too far to be in this room, not running to it',
                             name, path < 0 and 'unreachable' or string.format('%.0f', path))
@@ -500,7 +502,7 @@ local function echo_room(dir)
                 else
                     echo_ignore_flagellant(mob)
                 end
-                announce('Echo: %s room, on %s', dir, name)
+                announce('Echo: %s room, on %s', cap(dir), name)
             end
             -- North is normally a no-fight room; adds on aggro make it one
             if not fighting and not held and (dir ~= 'north' or #adds > 0) then
@@ -539,14 +541,16 @@ local function echo_room(dir)
                 end
             end
         elseif seen then
-            announce('Echo: %s room done', dir)
+            -- to the group from the MA only: every toon in the room runs this
+            local say = flags.MA_MODE and announce_g or announce
+            say('Echo: %s down, %s room completed, returning to center', name, cap(dir))
             break
         elseif (mq.gettime() - t0) > ECHO.MINI_WAIT * 1000 then
-            announce_g('Echo: %s never showed in the %s room, moving on', name, dir)
+            announce_g('Echo: %s never showed in the %s room, moving on', name, cap(dir))
             break
         end
         if (mq.gettime() - t0) > ECHO.MINI_MAX * 1000 then
-            announce_g('Echo: %s room timed out, moving on', dir)
+            announce_g('Echo: %s room timed out, moving on', cap(dir))
             break
         end
         mq.delay(def.pulse)
@@ -901,9 +905,14 @@ ECHO.ILLUSION_WAIT = 15   -- s
 -- click for them, so watch their spawn's race and warn in the UI if it is not the group's
 -- illusion. Never fails a check. Refreshed from Main (echo_st.outside_warn).
 echo_st.outside_warn = nil
+-- Built in a local and stored once at the end: MQ can suspend the script mid-function
+-- (its per-frame instruction budget), and the UI drawing in that gap saw the warning
+-- cleared -- a flicker every pulse.
 local function echo_outside_check()
-    echo_st.outside_warn = nil
-    if State.current_task ~= "Echo of Hate" or flags.ILLUSION_OTHER then return end
+    if State.current_task ~= "Echo of Hate" or flags.ILLUSION_OTHER then
+        echo_st.outside_warn = nil
+        return
+    end
     local want, reach, bad = wanted_illusion().race, Core.reachable_names(), {}
     for i = 1, (mq.TLO.Group.Members() or 0) do
         local m = mq.TLO.Group.Member(i)
@@ -912,9 +921,9 @@ local function echo_outside_check()
             bad[#bad + 1] = string.format('%s (%s)', name, tostring(race or 'not in zone'))
         end
     end
-    if #bad > 0 then
-        echo_st.outside_warn = string.format('not on our DanNet/EQBC and not %s: %s', want, table.concat(bad, ', '))
-    end
+    echo_st.outside_warn = #bad > 0
+        and string.format('not on our DanNet/EQBC and not %s: %s', want, table.concat(bad, ', '))
+        or nil
 end
 
 -- Only toons we can reach: an outside player cannot be clicked for, so waiting on them
@@ -965,7 +974,7 @@ local function echo_group_illusion()
         local out = group_missing_illusion()
         if #out == 0 then return end
         if not sent or (mq.gettime() - sent) >= 5000 then
-            announce_g('Echo: not %s before south: %s -- clicking %s', ill.race, names(out), ill.item)
+            announce_g('Echo: not %s before South: %s -- clicking %s', ill.race, names(out), ill.item)
             for _, m in ipairs(out) do
                 clicks[m.name] = (clicks[m.name] or 0) + 1
                 -- their CWTN would strip it again (see keep_illusion); a toon without the
@@ -990,7 +999,7 @@ local function echo_group_illusion()
     end
     local out = group_missing_illusion()
     if #out > 0 then
-        announce_g('Echo: going south with %s still not %s', names(out), ill.race)
+        announce_g('Echo: going South with %s still not %s', names(out), ill.race)
     end
 end
 
@@ -1008,9 +1017,9 @@ local function do_echo_room()
     echo_st.summoned = false
     echo_wait_lings()
     if echo_st.abort then return end
-    if not echo_clear_adds('the ' .. dir .. ' room') then return end
+    if not echo_clear_adds('the ' .. cap(dir) .. ' room') then return end
     echo_manual()
-    announce('Echo: heading to the %s room', dir)
+    announce('Echo: heading to the %s room', cap(dir))
     -- Sitting a room out in the middle: hold in Manual until the room is done. Chase now
     -- would follow the MA into the labyrinth on foot and drag its mobs back to the middle's
     -- door (seen live 2026-11-01, a toon whose port failed). Same done test as echo_room:
@@ -1033,7 +1042,7 @@ local function do_echo_room()
         -- race to test -- test what the Dark Stranger does, the group's most common race
         local common, mine = group_common_race(), mq.TLO.Me.Race()
         if common and mine ~= common then
-            announce_g('Echo: %s is %s, not the group\'s %s -- staying in the middle for south',
+            announce_g('Echo: %s is %s, not the group\'s %s -- staying in the middle for South',
                 def.name, tostring(mine), common)
             skip = true
             sit_out()
@@ -1042,7 +1051,7 @@ local function do_echo_room()
         echo_reillusion()
         echo_group_illusion()
         if not has_illusion() then
-            announce_g('Echo: not a %s (%s missing or blocked) -- staying in the middle for south',
+            announce_g('Echo: not a %s (%s missing or blocked) -- staying in the middle for South',
                 wanted_illusion().race, wanted_illusion().item)
             skip = true
             sit_out()
@@ -1051,7 +1060,7 @@ local function do_echo_room()
     if not skip and not echo_port(dir) then
         -- No port and still in the middle (the switch gone or locked): sit it out here
         if echo_where() == 'center' then
-            announce_g('Echo: %s could not port to %s -- holding in the middle until it is done', def.name, dir)
+            announce_g('Echo: %s could not port to %s -- holding in the middle until it is done', def.name, cap(dir))
             sit_out()
         end
     elseif not skip then
@@ -1074,10 +1083,10 @@ local function do_echo_room()
     -- then "the east switch is out of reach (436)" from the middle).
     local back
     if echo_st.summoned then
-        announce_g('Echo: %s was summoned out of the %s room -- not going back for its switch', def.name, dir)
+        announce_g('Echo: %s was summoned out of the %s room -- not going back for its switch', def.name, cap(dir))
         back = true
     elseif echo_where() == 'center' then
-        announce('Echo: already back in the middle (summoned) -- not going back for the %s switch', dir)
+        announce('Echo: already back in the middle (summoned) -- not going back for the %s switch', cap(dir))
         back = true
     else
         back = echo_port('center')
@@ -1134,7 +1143,7 @@ end
 -- echo_power: "The Echo sends power away, off into the labyrinth"
 local function event_echo_power()
     echo_st.pending = true
-    announce('Echo sent power into the labyrinth: next room %s', tostring(ECHO.order[echo_st.next]))
+    announce('Echo sent power into the labyrinth: next room %s', cap(ECHO.order[echo_st.next]))
 end
 -- ============================================================
 -- Echo of Hate phase 2: below the labyrinth. Step off the Echo on landing, deal with a
@@ -1517,7 +1526,11 @@ end
 -- count and would drag everyone back to north.
 function E.ma_changed(is_ma)
     local ma = mq.TLO.Group.MainAssist()
-    if not is_ma and ma then Core.bct(ma, "%s echosync", def.cmd) end
+    -- only if sorm is up on the MA: a box can come up first (the whole group started at
+    -- once), and the bare command is a "Couldn't parse" on a client without the bind
+    if not is_ma and ma then
+        Core.bct_np(ma, "/if (${Lua.Script[%s].Status.Equal[RUNNING]}) %s echosync", Core.LUA_NAME, def.cmd)
+    end
 end
 
 -- A hater 300+ out is in another part of the labyrinth (a room's mini from the middle,
@@ -1593,6 +1606,7 @@ function E.start()
         announce_g('Start: no Echo found -- start it by hand')
         return
     end
+    announce_g('Start: Moving to hail the Echo')
     mq.cmdf("/nav id %d distance=15 log=off", e.ID())
     Core.wait_nav(60)
     mq.delay(500)
@@ -1628,7 +1642,7 @@ E.commands = {
             printf('Echo rooms: stopping')
         elseif value == 'reset' then
             echo_st.next = 1
-            printf('Echo rooms: next is %s', ECHO.order[1])
+            printf('Echo rooms: next is %s', cap(ECHO.order[1]))
         else
             echo_st.pending = true
         end
@@ -1792,12 +1806,14 @@ function E.ui()
     -- amber; still to come: plain
     for i, dir in ipairs(ECHO.order) do
         ImGui.SameLine()
-        if flags.ECHO_RUNNING and i == echo_st.next - 1 then ImGui.TextColored(COLOR.PURPLE, '<'..dir..'>')
-        elseif i < echo_st.next then ImGui.TextDisabled(dir)
-        elseif i == echo_st.next then ImGui.TextColored(COLOR.AMBER, '['..dir..']')
-        else ImGui.Text(dir) end
+        local d = cap(dir)
+        if flags.ECHO_RUNNING and i == echo_st.next - 1 then ImGui.TextColored(COLOR.PURPLE, '<'..d..'>')
+        elseif i < echo_st.next then ImGui.TextDisabled(d)
+        elseif i == echo_st.next then ImGui.TextColored(COLOR.AMBER, '['..d..']')
+        else ImGui.Text(d) end
     end
-    if echo_st.next > #ECHO.order then
+    -- only once the last room's run is over, not while it is still in progress
+    if echo_st.next > #ECHO.order and not flags.ECHO_RUNNING then
         ImGui.SameLine()
         ImGui.TextColored(COLOR.GREEN, '(all done)')
     end

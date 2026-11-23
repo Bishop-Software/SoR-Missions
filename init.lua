@@ -1,5 +1,5 @@
 print('====== SoR Missions =======')
-print('version 0.982' )
+print('version 0.983' )
 print('by nerp')
 print('=======================')
 print('/sormissions (or just /sorm) for help')
@@ -238,7 +238,9 @@ local function announce_g(str, ...)
     local msg = string.format(str, ...)
     printf('\awSOR-Missions: \ar%s', msg)
     -- a raw \a is a BEL byte, and the EQBC server console beeps on every one it prints.
-    bcge_np("/echo \\awSOR-Missions [%s]: \\ar%s", def.name, (msg:gsub('\a', '\\a')))
+    -- EQBC eats one backslash in transit ("awSOR-Missions" on the other end), so it gets two
+    local bs = flags.USE_EQBC and '\\\\' or '\\'
+    bcge_np("/echo %sawSOR-Missions [%s]: %sar%s", bs, def.name, bs, (msg:gsub('\a', bs..'a')))
 end
 
 local function check_eqbc_default()
@@ -1070,7 +1072,7 @@ local function start_group_zone_in()
     mq.delay(1500)
     bcge_np(TARGET_IF_NEAR_INGAME, id, def.TARGET_RANGE, id)
     bcge_np(IF_INGAME.."/timed ${Math.Rand[100]} /say ready")
-    announce('Start: group told to say ready to %s', tostring(giver.CleanName()))
+    announce('Start: Group instructed to enter mission with %s', tostring(giver.CleanName()))
 end
 
 -- Target the giver for a /say ready and make sure it stuck: the plugin can swap the
@@ -1284,6 +1286,7 @@ START.PING_WAIT = 3    -- s for the pongs
 START.LAUNCH_WAIT = 15 -- s re-pinging for a /lua run to come up
 START.pongs = {}
 local LUA_NAME = MOD:gsub('%.', '/')
+Core.LUA_NAME = LUA_NAME
 -- Start sorm on these toons (only if in game and not zoning). Harmless if already running.
 -- Our own boxes only (the callers pass reachable names). False, nothing sent, with
 -- AUTO_LAUNCH off.
@@ -1751,6 +1754,27 @@ function Core.mission_complete()
         if is_ma then cwtn('mode 0') end
         announce_g('Mission complete: could not restore mode "%s"%s', tostring(m), is_ma and ' -- MA set to Manual' or '')
     end
+    -- Walk to the reward chest -- only once the mode change has landed: the plugin applies
+    -- it on its own pulse, and going to Manual stops any nav, so a nav sent straight after
+    -- the mode command is cancelled by it. Then a settle, and wait for the chest, which can
+    -- pop a beat after the kill.
+    local want = (not m and is_ma) and 'Manual'
+        or (m == 'Manual' or m == 'none') and 'Manual'
+        or (m and Core.MODE_NUM[(tostring(m):gsub(' ', ''))]) and m
+        or (is_ma and 'Manual') or nil
+    if want then mq.delay(3000, function() return get_cwtn_mode() == want end) end
+    mq.delay(1000)
+    -- The chest is an Object spawn (#a_dreadful_chest00). 'chest' alone is a spawn search
+    -- type keyword (chest type), so it never matches: '_chest' is the name.
+    local CHEST = 'object _chest'
+    mq.delay(5000, function() return mq.TLO.Spawn(CHEST)() ~= nil end)
+    local chest = mq.TLO.Spawn(CHEST)
+    if chest() then
+        announce('Mission complete: heading to %s', tostring(chest.CleanName()))
+        mq.cmdf('/nav id %d distance=20 log=off', chest.ID())
+    else
+        debug_local('Mission complete: no chest found')
+    end
 end
 
 local function Main()
@@ -1797,7 +1821,7 @@ local function Main()
             if in_task ~= was_active or State.current_task ~= was_active_task then
                 was_active, was_active_task = in_task, State.current_task
                 announce('Task "%s": %s', tostring(State.current_task),
-                    in_task and 'active' or (m and 'held, not in the mission zone -- idle' or 'not one of ours, idle'))
+                    in_task and 'active' or (m and 'held, not inside instance -- Idle' or 'No SoR Mission -- Idle'))
                 if not in_task then reset_engage() end
             end
             -- MA mode follows the group's Main Assist role.
@@ -1805,7 +1829,7 @@ local function Main()
             if is_ma ~= was_group_ma then
                 was_group_ma = is_ma
                 flags.MA_MODE = is_ma
-                announce('%s group MA: MA mode %s', is_ma and 'Now' or 'No longer', is_ma and 'on' or 'off')
+                announce('%s group MA: MA mode %s', is_ma and 'Now' or 'No longer', is_ma and 'On' or 'Off')
                 if m and m.ma_changed then m.ma_changed(is_ma) end
             end
             if in_task and m.pre_pulse then m.pre_pulse() end

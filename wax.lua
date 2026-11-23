@@ -103,14 +103,15 @@ end
 wax_balance_decide = function()
     local set = wax_live_adds()
     if #set == 0 then   -- wave over (or not live yet): next wave starts in balance
-        if wax_st.finishing then announce('Balance: wave over') end
-        wax_st.wave_max, wax_st.finishing, wax_st.spread = 0, false, nil
+        if wax_st.finishing then announce('Waxwork: wave over') end
+        wax_st.wave_max, wax_st.finishing, wax_st.spread, wax_st.balance_said = 0, false, nil, false
+        wax_st.focus_tid = nil
         return false
     end
     if #set > wax_st.wave_max then wax_st.wave_max = #set end
     if not wax_st.finishing and #set < wax_st.wave_max then
         wax_st.finishing = true
-        announce('Balance: an add died -- finishing the rest, lowest HP first')
+        announce('Waxwork: first add down -- focus mode, lowest HP first')
     end
     local tid = mq.TLO.Target.ID()
     local function switch_to(s, why)
@@ -126,13 +127,22 @@ wax_balance_decide = function()
         end
     end
 
+    -- Focus: our own pick (focus_tid) until it dies, then the lowest HP left. Tracked by
+    -- our pick, not by "on any live add": in SicTank the plugin retargets the moment an add
+    -- dies, so the MA was always already on some live add -- the plugin's choice, not the
+    -- lowest -- and we never picked (seen live 2026-11-23, targets changing, no focus lines).
+    -- One retarget per pick: if the plugin (or a melee hit) moves us off it afterwards, let
+    -- it -- no fighting it every tick. The next pick comes when our pick dies.
     if wax_st.finishing then
         wax_st.spread = nil
         for _, s in ipairs(set) do
-            if s.id == tid then return true end   -- stay on it until it dies
+            if s.id == wax_st.focus_tid then return true end
         end
         table.sort(set, function(a, b) return a.hp < b.hp end)
         switch_to(set[1], 'finishing')
+        wax_st.focus_tid = set[1].id
+        announce('Waxwork: focus -> %s (%d%%)', tostring(set[1].name), set[1].hp)
+        wax_st.said_tid = set[1].id   -- so the single-kill note does not repeat it
         return true
     end
 
@@ -140,6 +150,10 @@ wax_balance_decide = function()
     local lo, hi = 100, 0
     for _, s in ipairs(set) do lo, hi = math.min(lo, s.hp), math.max(hi, s.hp) end
     wax_st.spread = hi - lo
+    if not wax_st.balance_said then
+        wax_st.balance_said = true
+        announce('Waxwork: balance phase -- %d adds, keeping their HP within %d%%', #set, wax_st.SPREAD)
+    end
     -- Never stay put: every pulse, off whatever we are on and onto the highest of the rest.
     -- The nukers' damage lands a cast time after the switch, so the add we are on still
     -- reads high and staying on "the highest" overshot it -- the spread swung 15-48% (seen
@@ -446,13 +460,27 @@ function W.pre_pulse()
     check_wax_summon()
 end
 
+-- Single kills (kill in order, or a lone add): Main's kill-order pick chooses the target
+-- after this returns false, so note it here on the next pulse, once per new target.
+local function wax_note_target()
+    local tid = State.assigned_target
+    if not tid or tid == wax_st.said_tid then return end
+    local s = mq.TLO.Spawn(tid)
+    if not s() or s.Dead() then return end
+    wax_st.said_tid = tid
+    announce('Waxwork: target -> %s (%d%%)', tostring(s.CleanName()), s.PctHPs() or 0)
+end
+
 function W.pick()
-    return flags.WAX_BALANCE and wax_balance_pick()
+    local r = flags.WAX_BALANCE and wax_balance_pick()
+    if not r then wax_note_target() end
+    return r
 end
 
 -- A pair of mobs on the way in usually aggro as we pass. Rather than drag them onto the
 -- Abolishion, the walk stops and kills anything on the hate list that is not him.
 function W.start()
+    announce_g('Start: Moving to hail the Abolishion')
     Core.start_nav_clearing('abolishion')
     if not Core.start_gather() then return end
     local abo = mq.TLO.Spawn("npc Abolishion")
@@ -490,7 +518,7 @@ function W.ui()
     if ImGui.RadioButton('Kill in order##wax', not flags.WAX_BALANCE) then flags.WAX_BALANCE = false end
     if flags.WAX_BALANCE then
         if wax_st.finishing then
-            ImGui.TextColored(COLOR.AMBER, 'Finishing: lowest HP first')
+            ImGui.TextColored(COLOR.AMBER, 'Focus: lowest HP first')
         elseif wax_st.spread then
             ImGui.Text('HP spread:')
             ImGui.SameLine()

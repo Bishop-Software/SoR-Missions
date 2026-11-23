@@ -322,8 +322,8 @@ function M.reset()
 end
 
 function M.start()
-    mq.cmd("/nav spawn gwark")
-    Core.wait_nav(60)
+    -- Gwark is in reach from the zone-in: target and hail from where we land
+    announce_g('Start: Hailing Gwark')
     local gwark = mq.TLO.Spawn("npc gwark")
     if not (gwark() and Core.safe_target(gwark.ID())) then
         announce_g('Start: Gwark not in reach -- start it by hand')
