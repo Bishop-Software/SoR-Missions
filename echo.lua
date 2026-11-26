@@ -1316,8 +1316,9 @@ local function check_echo_port_down()
         local c = ECHO.p2_corner
         -- RGMercs keeps its own melee positioning in Boxr's Manual and pulled the tank back
         -- toward the Echo on every nav (the tank stopped ~67 short of the corner). Pause it
-        -- outright for the walk; a class plugin's Manual already holds still.
-        local rg = Core.rgmercs_lua()
+        -- outright for the walk; a class plugin's Manual already holds still. kissassist-lua
+        -- also keeps targeting and sticking in Boxr's Manual, so it is paused the same way.
+        local rg = Core.rgmercs_lua() or Core.kissassist_lua()
         if rg then Core.pause() end
         local ok_corner, err_corner = pcall(function()
         for i = 1, 3 do

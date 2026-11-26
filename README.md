@@ -23,6 +23,10 @@ group between rooms, burns).
   on it; otherwise DanNet.
 - A **CWTN class plugin** on each toon, or **MQ2Boxr** for mode control (Manual, Camp,
   Chase).
+  - **kissassist-lua** (the Lua port of KissAssist) needs an MQ2Boxr build that supports
+    it: for now the [Bishop-Software fork](https://github.com/Bishop-Software/MQ2Boxr).
+    The script's own pauses (the start, the Echo and Shar'Drahn moves) use kissassist-lua's
+    `/kapause`.
 - A group of your own boxes. A merc or a player who is not on your DanNet/EQBC can be in
   the group: they are not sent commands and have to play themselves.
 

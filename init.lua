@@ -369,6 +369,14 @@ local function isclass_plugin_loaded()
     return mq.TLO.Plugin(CWTN_PLUGIN[mq.TLO.Me.Class.ShortName()]).IsLoaded()
 end
 
+-- kissassist-lua (the Lua port of KissAssist), driving this character instead of a CWTN
+-- plugin. Its pause is /kapause on|off: a soft pause (the script stays RUNNING and still
+-- takes commands), not a toggle, reported by ${KissAssist.Paused}. Mode control goes
+-- through MQ2Boxr as for kissassist.mac.
+local function kissassist_lua()
+    return not isclass_plugin_loaded() and mq.TLO.Lua.Script('kissassist-lua').Status() == 'RUNNING'
+end
+
 -- Pause the class plugin / macro / helper luas. An already-paused plugin is not sent
 -- "pause on" again (CWTN's bard plugin stops the current song on a delay each pause).
 local function pause()
@@ -384,6 +392,7 @@ local function pause()
     elseif(mq.TLO.Macro.Name() == "rgmercs.mac") then squelch("/mqp on")
     elseif(mq.TLO.Macro.Name() == "RGMERC.mac") then squelch("/mqp on")
     elseif(mq.TLO.Lua.Script('rgmercs').Status() == 'RUNNING') then squelch('/lua pause rgmercs')
+    elseif(kissassist_lua()) then squelch('/kapause on')   -- also stops its attack/stick/nav/pet/medley
     elseif(mq.TLO.Me.Class.ShortName() == "WIZ") then squelch("/nuke pause")
     elseif(mq.TLO.Macro.Name() == "entropy.mac") then squelch("/mqp on") end
 
@@ -405,6 +414,8 @@ local function resume()
     elseif(mq.TLO.Macro.Name() == "rgmercs.mac") then squelch("/mqp off")
     elseif(mq.TLO.Macro.Name() == "RGMERC.mac") then squelch("/mqp off")
     elseif(mq.TLO.Macro.Name() == "entropy.mac") then squelch("/mqp off")
+    -- not a toggle: an extra resume does nothing, so no status check (unlike /lua pause)
+    elseif(kissassist_lua()) then squelch('/kapause off')
     elseif(mq.TLO.Me.Class.ShortName() == "WIZ") then squelch("/nuke resume") end
 
     if(mq.TLO.Lua.Script('offtank').Status() == 'PAUSED') then squelch('/lua pause offtank') end
@@ -619,6 +630,7 @@ local function check_plugins()
 end
 
 Core.rgmercs_lua, Core.cwtn, Core.get_cwtn_mode, Core.set_mode = rgmercs_lua, cwtn, get_cwtn_mode, set_mode
+Core.kissassist_lua = kissassist_lua
 Core.fight_mode, Core.ma_target, Core.bct_mode = fight_mode, ma_target, bct_mode
 
 -- ============================================================
